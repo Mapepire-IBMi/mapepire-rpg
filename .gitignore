@@ -1,0 +1,13 @@
+# local test configuration (contains credentials) and certificates
+*.conf
+*.key
+/mapepire.pem
+/server.pem
+
+# editor / TOBi build output
+.vscode/
+.logs/
+.deps/
+.evfevent/
+*.evfevent
+*.lst
