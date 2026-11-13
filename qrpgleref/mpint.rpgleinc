@@ -1,0 +1,449 @@
+**FREE
+// ===========================================================================
+//  Mapepire ILE RPG client - INTERNAL definitions shared by the modules of
+//  the MAPEPIRE service program. Not part of the public API; nothing here
+//  is exported from the service program.
+//
+//  Layering (each layer only uses the ones below it):
+//
+//     mpsqljob / mpquery   SQLJob, Query, QueryResult, Params   (public API)
+//     mpjson               JSON writer + parser
+//     mpws                 WebSocket client (RFC 6455)
+//     mptrans              TCP + TLS (GSKit) transport
+//     mputil               buffers, CCSID conversion, base64, SHA-1, errors
+// ===========================================================================
+/if defined(MPINT_H)
+/eof
+/endif
+/define MPINT_H
+
+/copy mapepire.rpgleinc
+
+// ---------------------------------------------------------------------------
+//  C runtime
+// ---------------------------------------------------------------------------
+dcl-pr mp_memcpy pointer extproc('memcpy');
+  dst pointer value;
+  src pointer value;
+  len uns(10) value;
+end-pr;
+
+dcl-pr mp_memmove pointer extproc('memmove');
+  dst pointer value;
+  src pointer value;
+  len uns(10) value;
+end-pr;
+
+dcl-pr mp_memcmp int(10) extproc('memcmp');
+  a   pointer value;
+  b   pointer value;
+  len uns(10) value;
+end-pr;
+
+dcl-pr mp_memchr pointer extproc('memchr');
+  buf pointer value;
+  chr int(10) value;
+  len uns(10) value;
+end-pr;
+
+// ---------------------------------------------------------------------------
+//  Growable byte buffer (heap)
+// ---------------------------------------------------------------------------
+dcl-ds mp_Buffer_t qualified template inz;
+  data pointer inz(*null);
+  len  int(10) inz(0);
+  cap  int(10) inz(0);
+end-ds;
+
+dcl-pr mp_buf_reserve extproc(*dclcase);
+  buf   likeds(mp_Buffer_t);
+  extra int(10) value;
+end-pr;
+
+dcl-pr mp_buf_addBytes extproc(*dclcase);
+  buf likeds(mp_Buffer_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+dcl-pr mp_buf_addByte extproc(*dclcase);
+  buf  likeds(mp_Buffer_t);
+  byte uns(3) value;
+end-pr;
+
+// Append text in the job CCSID, converted to UTF-8
+dcl-pr mp_buf_addText extproc(*dclcase);
+  buf  likeds(mp_Buffer_t);
+  text varchar(MP_SQL_MAX:4) const;
+end-pr;
+
+// Append native (job CCSID) bytes converted to UTF-8
+dcl-pr mp_buf_addNative extproc(*dclcase);
+  buf likeds(mp_Buffer_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+dcl-pr mp_buf_free extproc(*dclcase);
+  buf likeds(mp_Buffer_t);
+end-pr;
+
+// UTF-8 bytes -> job CCSID text (truncated to MP_VALUE_MAX)
+dcl-pr mp_utf8ToText varchar(MP_VALUE_MAX:4) extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+// ---------------------------------------------------------------------------
+//  Utilities
+// ---------------------------------------------------------------------------
+dcl-pr mp_base64Encode extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+  outBuf likeds(mp_Buffer_t);
+end-pr;
+
+// Decodes ASCII base64 (whitespace ignored). Returns *OFF on bad input.
+dcl-pr mp_base64Decode ind extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+  outBuf likeds(mp_Buffer_t);
+end-pr;
+
+dcl-pr mp_sha1 char(20) extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+dcl-pr mp_random extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+// Convert PEM (ASCII bytes) to DER. Returns *OFF if no certificate found.
+dcl-pr mp_pemToDer ind extproc(*dclcase);
+  ptr pointer value;
+  len int(10) value;
+  der likeds(mp_Buffer_t);
+end-pr;
+
+// Read a whole IFS stream file (raw bytes) into a buffer
+dcl-pr mp_readFile extproc(*dclcase);
+  path varchar(1024) const;
+  outBuf  likeds(mp_Buffer_t);
+end-pr;
+
+// Raise CPF9898 *ESCAPE to the caller of the procedure calling mp_throw.
+// Records the text in the last-error area first.
+dcl-pr mp_throw extproc(*dclcase);
+  text varchar(4096) const;
+end-pr;
+
+// Record a server error response as the last error and raise it.
+dcl-pr mp_throwResponse extproc(*dclcase);
+  resp   likeds(MP_ServerResponse_t) const;
+  prefix varchar(256) const options(*nopass);
+end-pr;
+
+// Raise the last error again (after an ON-ERROR clean up).
+dcl-pr mp_rethrow extproc(*dclcase);
+end-pr;
+
+dcl-pr mp_setLastError extproc(*dclcase);
+  resp likeds(MP_ServerResponse_t) const;
+end-pr;
+
+// Text of the C errno
+dcl-pr mp_errnoText varchar(256) extproc(*dclcase);
+end-pr;
+
+// ---------------------------------------------------------------------------
+//  Transport (TCP / TLS)
+// ---------------------------------------------------------------------------
+dcl-ds mp_Transport_t qualified template inz;
+  sd     int(10) inz(-1);
+  tls    ind     inz(*off);
+  env    pointer inz(*null);
+  soc    pointer inz(*null);
+  isOpen ind     inz(*off);
+end-ds;
+
+dcl-ds mp_TlsConfig_t qualified template inz;
+  useTls             ind;
+  ignoreUnauthorized ind;
+  // DER of the pinned certificate (len 0 = no pinning)
+  pinnedDer          likeds(mp_Buffer_t);
+  timeoutSecs        int(10);
+end-ds;
+
+dcl-pr mp_trans_open extproc(*dclcase);
+  trans likeds(mp_Transport_t);
+  host  varchar(255) const;
+  port  int(10) value;
+  cfg   likeds(mp_TlsConfig_t) const;
+end-pr;
+
+dcl-pr mp_trans_write extproc(*dclcase);
+  trans likeds(mp_Transport_t);
+  ptr   pointer value;
+  len   int(10) value;
+end-pr;
+
+// Returns bytes read; 0 = connection closed by peer
+dcl-pr mp_trans_read int(10) extproc(*dclcase);
+  trans likeds(mp_Transport_t);
+  ptr   pointer value;
+  len   int(10) value;
+end-pr;
+
+dcl-pr mp_trans_close extproc(*dclcase);
+  trans likeds(mp_Transport_t);
+end-pr;
+
+// ---------------------------------------------------------------------------
+//  WebSocket
+// ---------------------------------------------------------------------------
+dcl-ds mp_WebSocket_t qualified template inz;
+  trans  likeds(mp_Transport_t);
+  // receive buffer and read position within it
+  rbuf   likeds(mp_Buffer_t);
+  rpos   int(10) inz(0);
+  // send buffer (frames)
+  sbuf   likeds(mp_Buffer_t);
+  // last complete message received (UTF-8)
+  msg    likeds(mp_Buffer_t);
+  isOpen ind inz(*off);
+end-ds;
+
+dcl-pr mp_ws_open extproc(*dclcase);
+  ws         likeds(mp_WebSocket_t);
+  host       varchar(255) const;
+  port       int(10) value;
+  path       varchar(256) const;
+  authHeader varchar(1024) const;
+  cfg        likeds(mp_TlsConfig_t) const;
+end-pr;
+
+// Send one text message (UTF-8 bytes)
+dcl-pr mp_ws_sendText extproc(*dclcase);
+  ws  likeds(mp_WebSocket_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+// Receive the next complete text message into ws.msg
+dcl-pr mp_ws_receive extproc(*dclcase);
+  ws likeds(mp_WebSocket_t);
+end-pr;
+
+dcl-pr mp_ws_close extproc(*dclcase);
+  ws likeds(mp_WebSocket_t);
+end-pr;
+
+// ---------------------------------------------------------------------------
+//  JSON
+// ---------------------------------------------------------------------------
+dcl-c MP_JSON_OBJECT 1;
+dcl-c MP_JSON_ARRAY  2;
+dcl-c MP_JSON_STRING 3;
+dcl-c MP_JSON_NUMBER 4;
+dcl-c MP_JSON_TRUE   5;
+dcl-c MP_JSON_FALSE  6;
+dcl-c MP_JSON_NULL   7;
+
+// Writer
+dcl-ds mp_JsonWriter_t qualified template inz;
+  buf      likeds(mp_Buffer_t);
+  depth    int(10) inz(0);
+  cnt      int(10) dim(64) inz(0);
+  afterKey ind inz(*off);
+end-ds;
+
+dcl-pr mp_jw_beginObject extproc(*dclcase);
+  w likeds(mp_JsonWriter_t);
+end-pr;
+dcl-pr mp_jw_endObject extproc(*dclcase);
+  w likeds(mp_JsonWriter_t);
+end-pr;
+dcl-pr mp_jw_beginArray extproc(*dclcase);
+  w likeds(mp_JsonWriter_t);
+end-pr;
+dcl-pr mp_jw_endArray extproc(*dclcase);
+  w likeds(mp_JsonWriter_t);
+end-pr;
+dcl-pr mp_jw_key extproc(*dclcase);
+  w    likeds(mp_JsonWriter_t);
+  name varchar(256) const;
+end-pr;
+dcl-pr mp_jw_string extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  value varchar(MP_SQL_MAX:4) const;
+end-pr;
+// string value given as UTF-8 bytes
+dcl-pr mp_jw_stringUtf8 extproc(*dclcase);
+  w   likeds(mp_JsonWriter_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+dcl-pr mp_jw_int extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  value int(20) value;
+end-pr;
+dcl-pr mp_jw_bool extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  value ind value;
+end-pr;
+dcl-pr mp_jw_null extproc(*dclcase);
+  w likeds(mp_JsonWriter_t);
+end-pr;
+// pre-built JSON (UTF-8 bytes) as one value
+dcl-pr mp_jw_rawUtf8 extproc(*dclcase);
+  w   likeds(mp_JsonWriter_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+// convenience members
+dcl-pr mp_jw_strField extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  name  varchar(256) const;
+  value varchar(MP_SQL_MAX:4) const;
+end-pr;
+dcl-pr mp_jw_intField extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  name  varchar(256) const;
+  value int(20) value;
+end-pr;
+dcl-pr mp_jw_boolField extproc(*dclcase);
+  w     likeds(mp_JsonWriter_t);
+  name  varchar(256) const;
+  value ind value;
+end-pr;
+
+// Append a JSON string literal (quotes + escapes) for native text
+dcl-pr mp_json_quoteText extproc(*dclcase);
+  buf  likeds(mp_Buffer_t);
+  text varchar(MP_SQL_MAX:4) const;
+end-pr;
+
+// Append a JSON string literal for UTF-8 bytes
+dcl-pr mp_json_quoteUtf8 extproc(*dclcase);
+  buf likeds(mp_Buffer_t);
+  ptr pointer value;
+  len int(10) value;
+end-pr;
+
+// Parser / document
+dcl-ds mp_JsonNode_t qualified template inz;
+  type   int(5);
+  keyEsc int(3);
+  valEsc int(3);
+  keyPos int(10);
+  keyLen int(10);
+  valPos int(10);
+  valLen int(10);
+  parent int(10);
+  first  int(10);
+  last   int(10);
+  sib    int(10);
+  count  int(10);
+end-ds;
+
+dcl-ds mp_JsonDoc_t qualified template inz;
+  // UTF-8 source text - owned by the document
+  src       pointer inz(*null);
+  srcLen    int(10) inz(0);
+  srcCap    int(10) inz(0);
+  nodes     pointer inz(*null);
+  count     int(10) inz(0);
+  cap       int(10) inz(0);
+  // scratch buffer for unescaping strings
+  tmp       likeds(mp_Buffer_t);
+  // cache for sequential index access
+  cacheArr  int(10) inz(0);
+  cacheIdx  int(10) inz(0);
+  cacheNode int(10) inz(0);
+end-ds;
+
+// Parse a document; takes ownership of the buffer (buf is reset).
+dcl-pr mp_json_parse extproc(*dclcase);
+  doc likeds(mp_JsonDoc_t);
+  buf likeds(mp_Buffer_t);
+end-pr;
+
+dcl-pr mp_json_free extproc(*dclcase);
+  doc likeds(mp_JsonDoc_t);
+end-pr;
+
+dcl-pr mp_json_type int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+dcl-pr mp_json_count int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+// Member of an object by name (0 = not found)
+dcl-pr mp_json_member int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+  name varchar(256) const;
+end-pr;
+
+// Member of an object by UTF-8 name (0 = not found)
+dcl-pr mp_json_memberUtf8 int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+  ptr  pointer value;
+  len  int(10) value;
+end-pr;
+
+// n-th (1-based) element of an array or member of an object
+dcl-pr mp_json_index int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+  idx  int(10) value;
+end-pr;
+
+// Value as text (strings decoded; containers as raw JSON; null = '')
+dcl-pr mp_json_text varchar(MP_VALUE_MAX:4) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+// Value as UTF-8 bytes; returns pointer, sets len. Pointer is valid until
+// the next call for the same document.
+dcl-pr mp_json_utf8 pointer extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+  len  int(10);
+end-pr;
+
+dcl-pr mp_json_keyText varchar(256) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+dcl-pr mp_json_int int(20) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+// true -> *ON; missing/false/null -> dft
+dcl-pr mp_json_bool ind extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+  dft  ind value;
+end-pr;
+
+// First child / next sibling navigation
+dcl-pr mp_json_first int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;
+
+dcl-pr mp_json_next int(10) extproc(*dclcase);
+  doc  likeds(mp_JsonDoc_t);
+  node int(10) value;
+end-pr;

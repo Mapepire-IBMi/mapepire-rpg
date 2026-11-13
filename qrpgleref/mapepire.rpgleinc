@@ -1,0 +1,452 @@
+**FREE
+// ===========================================================================
+//  Mapepire ILE RPG client - public API
+//
+//  Include this copybook in any program that uses the MAPEPIRE service
+//  program:
+//
+//     /copy qrpgleref/mapepire.rpgleinc      (IFS source)
+//     /copy MAPEPIRE,MAPEPIRE_H              (source physical file)
+//
+//  The API follows the Mapepire client reference architecture:
+//    https://mapepire-ibmi.github.io/reference/maintenance/referencearchitecture/
+//
+//     SQLJob       manages the WebSocket connection to the mapepire-server
+//     Query        runs one SQL statement / CL command and tracks its state
+//     QueryResult  one server response (a block of rows + metadata)
+//
+//  "Objects" are opaque handles (pointers to storage that only the service
+//  program knows the layout of) - this is the encapsulation pillar. The
+//  result data structures below share a common base (MP_ServerResponse_t)
+//  via LIKEDS - this is the inheritance pillar.
+//
+//  Error handling: like the reference implementation, failures raise an
+//  exception. Every failure is sent as escape message CPF9898 so that
+//  callers can trap it with MONITOR / ON-ERROR. MP_getLastError() returns
+//  the details (error text, SQLCODE and SQLSTATE) of the last failure.
+// ===========================================================================
+/if defined(MAPEPIRE_H)
+/eof
+/endif
+/define MAPEPIRE_H
+
+// ---------------------------------------------------------------------------
+//  Limits
+// ---------------------------------------------------------------------------
+// Largest SQL statement / CL command accepted (characters)
+dcl-c MP_SQL_MAX 2097152;
+// Largest single value returned by the value getters (characters).
+// Longer values are truncated.
+dcl-c MP_VALUE_MAX 65535;
+
+// ---------------------------------------------------------------------------
+//  Opaque object handles
+// ---------------------------------------------------------------------------
+dcl-s MP_SQLJob_h      pointer template;
+dcl-s MP_Query_h       pointer template;
+dcl-s MP_QueryResult_h pointer template;
+dcl-s MP_Params_h      pointer template;
+
+// ---------------------------------------------------------------------------
+//  JobStatus  (SQLJob_getStatus)
+// ---------------------------------------------------------------------------
+dcl-c MP_JOB_NOT_STARTED 'notStarted';
+dcl-c MP_JOB_READY       'ready';
+dcl-c MP_JOB_BUSY        'busy';
+dcl-c MP_JOB_ENDED       'ended';
+
+// ---------------------------------------------------------------------------
+//  QueryState  (Query_getState)
+// ---------------------------------------------------------------------------
+dcl-c MP_QUERY_NOT_YET_RUN         1;
+dcl-c MP_QUERY_RUN_MORE_DATA_AVAIL 2;
+dcl-c MP_QUERY_RUN_DONE            3;
+dcl-c MP_QUERY_ERROR               4;
+
+// ---------------------------------------------------------------------------
+//  DaemonServer - where and how to connect
+//
+//  Declare with INZ(*LIKEDS) to pick up the defaults:
+//     dcl-ds server likeds(MP_DaemonServer_t) inz(*likeds);
+//
+//  TLS server verification (in order of precedence):
+//    ignoreUnauthorized = *ON  -> no verification at all. Unsafe; only for
+//                                 throw-away test systems.
+//    ca / caFile set           -> the server must present exactly this
+//                                 certificate (certificate pinning). Use
+//                                 this for Mapepire's default self-signed
+//                                 certificate.
+//    otherwise                 -> full validation against the *SYSTEM
+//                                 certificate store (DCM) plus host name
+//                                 verification.
+// ---------------------------------------------------------------------------
+dcl-ds MP_DaemonServer_t qualified template inz;
+  host               varchar(255);
+  port               int(10)  inz(8076);
+  user               varchar(128);
+  password           varchar(128);
+  ignoreUnauthorized ind      inz(*off);
+  // PEM text of the certificate the server must present
+  ca                 varchar(16384);
+  // ...or the IFS path of a PEM file holding it
+  caFile             varchar(1024);
+  // *OFF = plain ws:// (server started with MP_UNSECURE=true)
+  useTls             ind      inz(*on);
+  // read timeout in seconds; 0 = wait forever
+  timeout            int(10)  inz(0);
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  Job (connection) options - passed to SQLJob_new
+// ---------------------------------------------------------------------------
+dcl-ds MP_JobOptions_t qualified template inz;
+  // 'tcp' or 'cli'
+  technique   varchar(3)    inz('tcp');
+  application varchar(64)   inz('Mapepire RPG Client');
+  // JDBC properties, e.g. 'naming=system;libraries=MYLIB,QGPL'
+  props       varchar(4096) inz('');
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  QueryOptions - passed to SQLJob_query / SQLJob_queryAndRun
+// ---------------------------------------------------------------------------
+dcl-ds MP_QueryOptions_t qualified template inz;
+  // rows come back as arrays instead of objects (smaller payload)
+  isTerseResults ind inz(*off);
+  // the "SQL" text is a CL command
+  isClCommand    ind inz(*off);
+  // parameter markers; setting this makes the query a prepared statement
+  parameters     pointer inz(*null);
+  // close the server cursor as soon as all rows were fetched
+  autoClose      ind inz(*off);
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  Responses. Every response "inherits" MP_ServerResponse_t through its
+//  BASE subfield, e.g.  conn.base.success  /  res.base.error
+// ---------------------------------------------------------------------------
+dcl-ds MP_ServerResponse_t qualified template inz;
+  id            varchar(64);
+  success       ind;
+  // milliseconds
+  executionTime int(20);
+  error         varchar(4096);
+  sqlRc         int(10);
+  sqlState      varchar(5);
+end-ds;
+
+dcl-ds MP_ConnectionResult_t qualified template inz;
+  base likeds(MP_ServerResponse_t);
+  // IBM i job of the server side connection: number/user/name
+  job  varchar(64);
+end-ds;
+
+dcl-ds MP_VersionResult_t qualified template inz;
+  base      likeds(MP_ServerResponse_t);
+  version   varchar(64);
+  buildDate varchar(64);
+end-ds;
+
+dcl-ds MP_PingResult_t qualified template inz;
+  base    likeds(MP_ServerResponse_t);
+  alive   ind;
+  dbAlive ind;
+end-ds;
+
+dcl-ds MP_QueryResult_t qualified template inz;
+  base           likeds(MP_ServerResponse_t);
+  hasResults     ind;
+  isDone         ind;
+  updateCount    int(20);
+  parameterCount int(10);
+  columnCount    int(10);
+  // rows in THIS block (see Query_fetchMore for the next block)
+  rowCount       int(10);
+end-ds;
+
+dcl-ds MP_ColumnMetaData_t qualified template inz;
+  name          varchar(128);
+  label         varchar(128);
+  type          varchar(32);
+  displaySize   int(10);
+  precision     int(10);
+  scale         int(10);
+  // 0 = no nulls, 1 = nullable, 2 = unknown
+  nullable      int(10);
+  autoIncrement ind;
+  readOnly      ind;
+  writeable     ind;
+  table         varchar(128);
+end-ds;
+
+// ===========================================================================
+//  SQLJob
+// ===========================================================================
+
+// Create a new (not yet connected) job.
+dcl-pr SQLJob_new like(MP_SQLJob_h) extproc(*dclcase);
+  options likeds(MP_JobOptions_t) const options(*nopass);
+end-pr;
+
+// Open the WebSocket and the database connection.
+dcl-pr SQLJob_connect likeds(MP_ConnectionResult_t) extproc(*dclcase);
+  job    like(MP_SQLJob_h) value;
+  server likeds(MP_DaemonServer_t) const;
+end-pr;
+
+// Current status: MP_JOB_NOT_STARTED / READY / BUSY / ENDED
+dcl-pr SQLJob_getStatus varchar(10) extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// IBM i job name of the server side connection (blank until connected)
+dcl-pr SQLJob_getId varchar(64) extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// Next unique correlation id for this job, e.g. 'query12'
+dcl-pr SQLJob_getUniqueId varchar(64) extproc(*dclcase);
+  job    like(MP_SQLJob_h) value;
+  prefix varchar(32) const options(*nopass);
+end-pr;
+
+// Create a Query object (does not run it).
+dcl-pr SQLJob_query like(MP_Query_h) extproc(*dclcase);
+  job  like(MP_SQLJob_h) value;
+  sql  varchar(MP_SQL_MAX:4) const;
+  opts likeds(MP_QueryOptions_t) const options(*nopass);
+end-pr;
+
+// Create a Query, run it and close its cursor. The returned result owns
+// the query: QueryResult_free releases both.
+dcl-pr SQLJob_queryAndRun like(MP_QueryResult_h) extproc(*dclcase);
+  job         like(MP_SQLJob_h) value;
+  sql         varchar(MP_SQL_MAX:4) const;
+  opts        likeds(MP_QueryOptions_t) const options(*nopass:*omit);
+  rowsToFetch int(10) value options(*nopass);
+end-pr;
+
+// Health check of the server process and its database connection.
+dcl-pr SQLJob_ping likeds(MP_PingResult_t) extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// Version of the mapepire-server.
+dcl-pr SQLJob_getVersion likeds(MP_VersionResult_t) extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// Ask the server for the IBM i job name of the database connection.
+dcl-pr SQLJob_getDbJob varchar(64) extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// Visual Explain (DOVE). The result rows are the Visual Explain rows.
+// The returned result owns its query: QueryResult_free releases both.
+dcl-pr SQLJob_explain like(MP_QueryResult_h) extproc(*dclcase);
+  job   like(MP_SQLJob_h) value;
+  sql   varchar(MP_SQL_MAX:4) const;
+  runIt ind value options(*nopass);
+end-pr;
+
+// End the connection (status becomes MP_JOB_ENDED).
+dcl-pr SQLJob_close extproc(*dclcase);
+  job like(MP_SQLJob_h) value;
+end-pr;
+
+// Close (if needed) and release the job and every query / result it owns.
+// The handle is set to *NULL.
+dcl-pr SQLJob_free extproc(*dclcase);
+  job like(MP_SQLJob_h);
+end-pr;
+
+// ===========================================================================
+//  Query
+// ===========================================================================
+
+// Run the statement and return the first block of rows.
+// rowsToFetch defaults to 100.
+dcl-pr Query_run like(MP_QueryResult_h) extproc(*dclcase);
+  query       like(MP_Query_h) value;
+  rowsToFetch int(10) value options(*nopass);
+end-pr;
+
+// Fetch the next block of rows (only valid in RUN_MORE_DATA_AVAIL state).
+dcl-pr Query_fetchMore like(MP_QueryResult_h) extproc(*dclcase);
+  query       like(MP_Query_h) value;
+  rowsToFetch int(10) value options(*nopass);
+end-pr;
+
+// Run an already prepared statement again with new parameter values.
+dcl-pr Query_execute like(MP_QueryResult_h) extproc(*dclcase);
+  query       like(MP_Query_h) value;
+  parameters  like(MP_Params_h) value;
+  rowsToFetch int(10) value options(*nopass);
+end-pr;
+
+// Close the server side cursor / prepared statement.
+dcl-pr Query_close extproc(*dclcase);
+  query like(MP_Query_h) value;
+end-pr;
+
+// MP_QUERY_NOT_YET_RUN / RUN_MORE_DATA_AVAIL / RUN_DONE / ERROR
+dcl-pr Query_getState int(10) extproc(*dclcase);
+  query like(MP_Query_h) value;
+end-pr;
+
+// Correlation id (server cursor handle); blank until the query has run.
+dcl-pr Query_getId varchar(64) extproc(*dclcase);
+  query like(MP_Query_h) value;
+end-pr;
+
+// Close (if needed) and release the query and all of its results.
+// The handle is set to *NULL.
+dcl-pr Query_free extproc(*dclcase);
+  query like(MP_Query_h);
+end-pr;
+
+// ===========================================================================
+//  QueryResult   (rows and columns are 1-based)
+// ===========================================================================
+
+// Summary of the response (success, error, isDone, rowCount, ...)
+dcl-pr QueryResult_get likeds(MP_QueryResult_t) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_isSuccess ind extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_isDone ind extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_getRowCount int(10) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_getColumnCount int(10) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_getUpdateCount int(20) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_getColumn likeds(MP_ColumnMetaData_t) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  column int(10) value;
+end-pr;
+
+// 1-based column number of a column name; 0 when not found
+dcl-pr QueryResult_getColumnIndex int(10) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  name   varchar(128) const;
+end-pr;
+
+// Cell value as text (numbers in JSON notation, booleans 'true'/'false',
+// NULL as '')
+dcl-pr QueryResult_getValue varchar(MP_VALUE_MAX:4) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  row    int(10) value;
+  column int(10) value;
+end-pr;
+
+dcl-pr QueryResult_getValueByName varchar(MP_VALUE_MAX:4)
+       extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  row    int(10) value;
+  name   varchar(128) const;
+end-pr;
+
+dcl-pr QueryResult_isNull ind extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  row    int(10) value;
+  column int(10) value;
+end-pr;
+
+dcl-pr QueryResult_getInt int(20) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  row    int(10) value;
+  column int(10) value;
+end-pr;
+
+dcl-pr QueryResult_getDecimal packed(63:15) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  row    int(10) value;
+  column int(10) value;
+end-pr;
+
+// Any top level response field, e.g. 'job' or 'parameter_count'.
+// Objects and arrays are returned as JSON text.
+dcl-pr QueryResult_getField varchar(MP_VALUE_MAX:4) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  name   varchar(128) const;
+end-pr;
+
+// Output parameters of a CALL (prepared statements only)
+dcl-pr QueryResult_getOutputParmCount int(10) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+end-pr;
+
+dcl-pr QueryResult_getOutputParm varchar(MP_VALUE_MAX:4) extproc(*dclcase);
+  result like(MP_QueryResult_h) value;
+  index  int(10) value;
+end-pr;
+
+// Release the result. The handle is set to *NULL.
+dcl-pr QueryResult_free extproc(*dclcase);
+  result like(MP_QueryResult_h);
+end-pr;
+
+// ===========================================================================
+//  Params - parameter marker values for prepared statements
+//
+//  Values are added in marker order. For a batch (multi-row) execution
+//  call Params_newRow between the parameter sets.
+// ===========================================================================
+dcl-pr Params_new like(MP_Params_h) extproc(*dclcase);
+end-pr;
+
+dcl-pr Params_addString extproc(*dclcase);
+  params like(MP_Params_h) value;
+  value  varchar(MP_VALUE_MAX:4) const;
+end-pr;
+
+dcl-pr Params_addInt extproc(*dclcase);
+  params like(MP_Params_h) value;
+  value  int(20) value;
+end-pr;
+
+dcl-pr Params_addDecimal extproc(*dclcase);
+  params like(MP_Params_h) value;
+  value  packed(63:15) value;
+end-pr;
+
+dcl-pr Params_addBoolean extproc(*dclcase);
+  params like(MP_Params_h) value;
+  value  ind value;
+end-pr;
+
+dcl-pr Params_addNull extproc(*dclcase);
+  params like(MP_Params_h) value;
+end-pr;
+
+// Start the next parameter set of a batch
+dcl-pr Params_newRow extproc(*dclcase);
+  params like(MP_Params_h) value;
+end-pr;
+
+// Release the list. The handle is set to *NULL.
+dcl-pr Params_free extproc(*dclcase);
+  params like(MP_Params_h);
+end-pr;
+
+// ===========================================================================
+//  Errors
+// ===========================================================================
+
+// Details of the most recent failure (server error or client error)
+dcl-pr MP_getLastError likeds(MP_ServerResponse_t) extproc(*dclcase);
+end-pr;
