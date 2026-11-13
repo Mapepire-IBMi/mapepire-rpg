@@ -1,0 +1,9 @@
+{
+  "version": "0.0.1",
+  "description": "Mapepire ILE RPG client",
+  "objlib": "&MAPEPIRE_LIB",
+  "curlib": "&MAPEPIRE_LIB",
+  "includePath": ["qrpgleref"],
+  "buildCommand": "makei build",
+  "compileCommand": "makei compile -f {filename}"
+}

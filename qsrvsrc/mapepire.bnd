@@ -1,0 +1,66 @@
+/* ================================================================== */
+/*  MAPEPIRE service program - exported (public) procedures           */
+/*                                                                    */
+/*  Only the public API is exported; the internal procedures of the   */
+/*  modules stay private (encapsulation). New exports must be ADDED   */
+/*  AT THE END so existing programs keep working.                     */
+/* ================================================================== */
+STRPGMEXP PGMLVL(*CURRENT) SIGNATURE('MAPEPIRE_RPG_V1')
+
+  /* SQLJob */
+  EXPORT SYMBOL('SQLJob_new')
+  EXPORT SYMBOL('SQLJob_connect')
+  EXPORT SYMBOL('SQLJob_getStatus')
+  EXPORT SYMBOL('SQLJob_getId')
+  EXPORT SYMBOL('SQLJob_getUniqueId')
+  EXPORT SYMBOL('SQLJob_query')
+  EXPORT SYMBOL('SQLJob_queryAndRun')
+  EXPORT SYMBOL('SQLJob_ping')
+  EXPORT SYMBOL('SQLJob_getVersion')
+  EXPORT SYMBOL('SQLJob_getDbJob')
+  EXPORT SYMBOL('SQLJob_explain')
+  EXPORT SYMBOL('SQLJob_close')
+  EXPORT SYMBOL('SQLJob_free')
+
+  /* Query */
+  EXPORT SYMBOL('Query_run')
+  EXPORT SYMBOL('Query_fetchMore')
+  EXPORT SYMBOL('Query_execute')
+  EXPORT SYMBOL('Query_close')
+  EXPORT SYMBOL('Query_getState')
+  EXPORT SYMBOL('Query_getId')
+  EXPORT SYMBOL('Query_free')
+
+  /* QueryResult */
+  EXPORT SYMBOL('QueryResult_get')
+  EXPORT SYMBOL('QueryResult_isSuccess')
+  EXPORT SYMBOL('QueryResult_isDone')
+  EXPORT SYMBOL('QueryResult_getRowCount')
+  EXPORT SYMBOL('QueryResult_getColumnCount')
+  EXPORT SYMBOL('QueryResult_getUpdateCount')
+  EXPORT SYMBOL('QueryResult_getColumn')
+  EXPORT SYMBOL('QueryResult_getColumnIndex')
+  EXPORT SYMBOL('QueryResult_getValue')
+  EXPORT SYMBOL('QueryResult_getValueByName')
+  EXPORT SYMBOL('QueryResult_isNull')
+  EXPORT SYMBOL('QueryResult_getInt')
+  EXPORT SYMBOL('QueryResult_getDecimal')
+  EXPORT SYMBOL('QueryResult_getField')
+  EXPORT SYMBOL('QueryResult_getOutputParmCount')
+  EXPORT SYMBOL('QueryResult_getOutputParm')
+  EXPORT SYMBOL('QueryResult_free')
+
+  /* Params */
+  EXPORT SYMBOL('Params_new')
+  EXPORT SYMBOL('Params_addString')
+  EXPORT SYMBOL('Params_addInt')
+  EXPORT SYMBOL('Params_addDecimal')
+  EXPORT SYMBOL('Params_addBoolean')
+  EXPORT SYMBOL('Params_addNull')
+  EXPORT SYMBOL('Params_newRow')
+  EXPORT SYMBOL('Params_free')
+
+  /* Errors */
+  EXPORT SYMBOL('MP_getLastError')
+
+ENDPGMEXP

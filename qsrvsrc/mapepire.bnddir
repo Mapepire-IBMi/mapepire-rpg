@@ -1,0 +1,6 @@
+/* Binding directory for applications that use the Mapepire client.     */
+/* TOBi pseudo-source: &O = object library, &N = object name.            */
+/* A leading ! ignores errors (the directory may not exist yet).         */
+!DLTBNDDIR BNDDIR(&O/&N)
+CRTBNDDIR BNDDIR(&O/&N) TEXT('Mapepire ILE RPG client')
+ADDBNDDIRE BNDDIR(&O/&N) OBJ((&O/MAPEPIRE *SRVPGM))
