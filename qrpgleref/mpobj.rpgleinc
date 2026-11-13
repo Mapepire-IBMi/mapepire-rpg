@@ -1,0 +1,179 @@
+**FREE
+// ===========================================================================
+//  Mapepire ILE RPG client - INTERNAL object layouts
+//
+//  These templates are the private "class" definitions behind the opaque
+//  handles of the public API (encapsulation). Callers never see them.
+//
+//  Inheritance follows the reference architecture: SQLJob extends BaseJob,
+//  modelled the RPG way - the child data structure embeds the parent with
+//  LIKEDS, so every BaseJob field is reachable as job.base.<field>.
+// ===========================================================================
+/if defined(MPOBJ_H)
+/eof
+/endif
+/define MPOBJ_H
+
+/copy mpint.rpgleinc
+
+dcl-c EYE_JOB    'MPSQLJOB';
+dcl-c EYE_QUERY  'MPQUERY ';
+dcl-c EYE_RESULT 'MPRESULT';
+dcl-c EYE_PARAMS 'MPPARAMS';
+dcl-c EYE_FREED  '*FREED* ';
+
+// ---------------------------------------------------------------------------
+//  BaseJob - what every job type has
+// ---------------------------------------------------------------------------
+dcl-ds BaseJob_t qualified template inz;
+  eye             char(8);
+  status          varchar(10);
+  uniqueIdCounter int(10);
+  // unique id of this job instance ('sqljob1')
+  uniqueId        varchar(64);
+  // server side IBM i job (set by connect)
+  id              varchar(64);
+  options         likeds(MP_JobOptions_t);
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  SQLJob extends BaseJob
+// ---------------------------------------------------------------------------
+dcl-ds SQLJob_t qualified template inz;
+  base       likeds(BaseJob_t);
+  channel    likeds(mp_WebSocket_t);
+  // queries created by this job (Query.global_query_list, per job)
+  firstQuery pointer;
+  lastQuery  pointer;
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  Query
+// ---------------------------------------------------------------------------
+dcl-ds Query_t qualified template inz;
+  eye             char(8);
+  job             pointer;
+  // SQL text / CL command, UTF-8
+  sql             likeds(mp_Buffer_t);
+  isPrepared      ind;
+  isClCommand     ind;
+  shouldAutoClose ind;
+  isTerseResults  ind;
+  // parameters as a JSON array, UTF-8
+  parameters      likeds(mp_Buffer_t);
+  rowsToFetch     int(10);
+  state           int(10);
+  correlationId   varchar(64);
+  // server holds a cursor / prepared statement for correlationId
+  serverOpen      ind;
+  // explain (DOVE) query - rows live in "vedata"
+  isExplain       ind;
+  explainRun      ind;
+  // freed together with its last result (SQLJob_queryAndRun / explain)
+  freeWithResult  ind;
+  // column metadata (array of MP_ColumnMetaData_t)
+  columns         pointer;
+  columnCount     int(10);
+  // results created by this query
+  firstResult     pointer;
+  lastResult      pointer;
+  // links in the job's query list
+  prev            pointer;
+  nxt             pointer;
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  QueryResult
+// ---------------------------------------------------------------------------
+dcl-ds QueryResult_t qualified template inz;
+  eye      char(8);
+  query    pointer;
+  doc      likeds(mp_JsonDoc_t);
+  summary  likeds(MP_QueryResult_t);
+  dataNode int(10);
+  // row number -> JSON node id (array of int(10))
+  rowNodes pointer;
+  prev     pointer;
+  nxt      pointer;
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  Params
+// ---------------------------------------------------------------------------
+dcl-ds Params_t qualified template inz;
+  eye      char(8);
+  // values of the current parameter set, comma separated JSON (UTF-8)
+  cur      likeds(mp_Buffer_t);
+  curCount int(10);
+  // completed parameter sets of a batch: [..],[..]
+  rows     likeds(mp_Buffer_t);
+  rowCount int(10);
+  isBatch  ind;
+end-ds;
+
+// ---------------------------------------------------------------------------
+//  Shared between MPSQLJOB and MPQUERY
+// ---------------------------------------------------------------------------
+
+// Validate a job handle; returns the pointer
+dcl-pr mp_job_check pointer extproc(*dclcase);
+  job pointer value;
+end-pr;
+
+// Next unique id ('query12')
+dcl-pr mp_job_nextId varchar(64) extproc(*dclcase);
+  job    pointer value;
+  prefix varchar(32) const;
+end-pr;
+
+// Send a request and wait for the response with the same id.
+// The response is parsed into doc (caller frees it).
+dcl-pr mp_job_request extproc(*dclcase);
+  job pointer value;
+  w   likeds(mp_JsonWriter_t);
+  id  varchar(64) const;
+  doc likeds(mp_JsonDoc_t);
+end-pr;
+
+// Common response fields
+dcl-pr mp_job_response likeds(MP_ServerResponse_t) extproc(*dclcase);
+  doc likeds(mp_JsonDoc_t);
+end-pr;
+
+dcl-pr mp_job_isConnected ind extproc(*dclcase);
+  job pointer value;
+end-pr;
+
+// Query list maintenance
+dcl-pr mp_job_linkQuery extproc(*dclcase);
+  job   pointer value;
+  query pointer value;
+end-pr;
+
+dcl-pr mp_job_unlinkQuery extproc(*dclcase);
+  job   pointer value;
+  query pointer value;
+end-pr;
+
+// Implemented in MPQUERY
+dcl-pr mp_query_create pointer extproc(*dclcase);
+  job  pointer value;
+  sql  varchar(MP_SQL_MAX:4) const;
+  opts likeds(MP_QueryOptions_t) const;
+end-pr;
+
+// Release a query without talking to the server
+dcl-pr mp_query_destroy extproc(*dclcase);
+  query pointer value;
+end-pr;
+
+// Run a DOVE request for the query
+dcl-pr mp_query_explain pointer extproc(*dclcase);
+  query pointer value;
+end-pr;
+
+// Serialize a Params object as a JSON array into a buffer
+dcl-pr mp_params_toJson extproc(*dclcase);
+  params pointer value;
+  outBuf    likeds(mp_Buffer_t);
+end-pr;
